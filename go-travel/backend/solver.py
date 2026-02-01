@@ -34,6 +34,10 @@ class ItineraryItem:
     category: str
     why: str
     formatted_address: Optional[str] = None
+    rating: Optional[float] = None
+    review_count: Optional[int] = None
+    types: Optional[List[str]] = None  # Google Places types for tags
+    score_breakdown: Optional[Dict[str, Any]] = None  # For low score explanations
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -50,6 +54,10 @@ class ItineraryItem:
             "category": self.category,
             "why": self.why,
             "formatted_address": self.formatted_address,
+            "rating": self.rating,
+            "review_count": self.review_count,
+            "types": self.types or [],
+            "score_breakdown": self.score_breakdown,
         }
     
     @staticmethod
@@ -524,6 +532,10 @@ class ItinerarySolver:
                         category=place.get("category", ""),
                         why=place.get("why", ""),
                         formatted_address=place.get("formatted_address"),
+                        rating=place.get("rating"),
+                        review_count=place.get("user_ratings_total"),
+                        types=place.get("types"),
+                        score_breakdown=place.get("score_breakdown"),
                     )
                     
                     day.items.append(item)

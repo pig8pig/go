@@ -2,7 +2,7 @@
 
 import { motion, AnimatePresence } from "framer-motion";
 import { 
-  ArrowRight, 
+  ArrowLeft,
   MapPin, 
   Calendar, 
   Sparkles, 
@@ -47,6 +47,16 @@ interface ItineraryPlace {
   photo_url?: string;
   rating?: number;
   review_count?: number;
+  tags?: string[];
+  low_score_note?: string;  // Explains low utility scores (distance, weather, etc.)
+}
+
+interface WeatherInfo {
+  condition: string;
+  description: string;
+  temperature: number;
+  feels_like?: number;
+  humidity?: number;
 }
 
 interface DaySummary {
@@ -62,6 +72,7 @@ interface DaySummary {
 interface DayPlan {
   day_number: number;
   date: string | null;
+  weather?: WeatherInfo;  // Weather for this day
   places: ItineraryPlace[];
   summary: DaySummary;
 }
@@ -108,6 +119,76 @@ const CATEGORY_CONFIG: Record<string, { emoji: string; color: string }> = {
   other: { emoji: "📍", color: "border-l-gray-500" },
 };
 
+// Popular cities for autocomplete
+const POPULAR_CITIES = [
+  "Tokyo, Japan",
+  "Paris, France",
+  "London, United Kingdom",
+  "New York, USA",
+  "Los Angeles, USA",
+  "San Francisco, USA",
+  "Chicago, USA",
+  "Miami, USA",
+  "Barcelona, Spain",
+  "Madrid, Spain",
+  "Rome, Italy",
+  "Milan, Italy",
+  "Venice, Italy",
+  "Florence, Italy",
+  "Berlin, Germany",
+  "Munich, Germany",
+  "Amsterdam, Netherlands",
+  "Vienna, Austria",
+  "Prague, Czech Republic",
+  "Budapest, Hungary",
+  "Lisbon, Portugal",
+  "Dublin, Ireland",
+  "Edinburgh, Scotland",
+  "Copenhagen, Denmark",
+  "Stockholm, Sweden",
+  "Oslo, Norway",
+  "Helsinki, Finland",
+  "Reykjavik, Iceland",
+  "Athens, Greece",
+  "Istanbul, Turkey",
+  "Dubai, UAE",
+  "Singapore",
+  "Hong Kong",
+  "Seoul, South Korea",
+  "Taipei, Taiwan",
+  "Bangkok, Thailand",
+  "Bali, Indonesia",
+  "Beijing, China",
+  "Shanghai, China",
+  "Shenzhen, China",
+  "Guangzhou, China",
+  "Chengdu, China",
+  "Xi'an, China",
+  "Hangzhou, China",
+  "Kyoto, Japan",
+  "Osaka, Japan",
+  "Hanoi, Vietnam",
+  "Ho Chi Minh City, Vietnam",
+  "Kuala Lumpur, Malaysia",
+  "Manila, Philippines",
+  "Jakarta, Indonesia",
+  "Mumbai, India",
+  "New Delhi, India",
+  "Sydney, Australia",
+  "Melbourne, Australia",
+  "Auckland, New Zealand",
+  "Toronto, Canada",
+  "Vancouver, Canada",
+  "Montreal, Canada",
+  "Mexico City, Mexico",
+  "Cancun, Mexico",
+  "Rio de Janeiro, Brazil",
+  "Buenos Aires, Argentina",
+  "Cape Town, South Africa",
+  "Marrakech, Morocco",
+  "Cairo, Egypt",
+];
+
 // ========== HELPER FUNCTIONS ==========
 
 const getCategoryConfig = (category: string) => {
@@ -129,6 +210,21 @@ const formatDuration = (minutes: number) => {
   const hours = Math.floor(minutes / 60);
   const mins = minutes % 60;
   return mins > 0 ? `${hours}h ${mins}m` : `${hours}h`;
+};
+
+const getWeatherEmoji = (condition: string) => {
+  const weatherEmojis: Record<string, string> = {
+    Clear: "☀️",
+    Clouds: "☁️",
+    Rain: "🌧️",
+    Drizzle: "🌦️",
+    Thunderstorm: "⛈️",
+    Snow: "❄️",
+    Mist: "🌫️",
+    Fog: "🌫️",
+    Haze: "🌫️",
+  };
+  return weatherEmojis[condition] || "🌤️";
 };
 
 // ========== COMPONENTS ==========
@@ -172,6 +268,27 @@ function PlaceCard({ place, index }: { place: ItineraryPlace; index: number }) {
 
             {/* Why */}
             <p className="text-gray-600 text-sm mt-1 line-clamp-2">{place.why}</p>
+
+            {/* Tags */}
+            {place.tags && place.tags.length > 0 && (
+              <div className="flex flex-wrap gap-1 mt-2">
+                {place.tags.map((tag) => (
+                  <span 
+                    key={tag}
+                    className="px-2 py-0.5 bg-gray-100 text-gray-600 text-xs rounded-full"
+                  >
+                    {tag}
+                  </span>
+                ))}
+              </div>
+            )}
+
+            {/* Low score note */}
+            {place.low_score_note && (
+              <p className="text-xs text-amber-600 mt-2 italic">
+                ℹ️ {place.low_score_note}
+              </p>
+            )}
 
             {/* Meta row */}
             <div className="flex flex-wrap items-center gap-3 mt-2 text-sm text-gray-500">
@@ -240,6 +357,13 @@ function DayCard({ day, isExpanded, onToggle }: {
           <span className="text-2xl font-bold">Day {day.day_number}</span>
           {day.date && (
             <span className="text-gray-400">{formatDate(day.date)}</span>
+          )}
+          {/* Weather badge */}
+          {day.weather && (
+            <span className="flex items-center gap-1 px-2 py-0.5 bg-white/10 rounded text-sm">
+              <span>{getWeatherEmoji(day.weather.condition)}</span>
+              <span>{Math.round(day.weather.temperature)}°C</span>
+            </span>
           )}
         </div>
 
@@ -350,6 +474,48 @@ export default function Home() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [expandedDays, setExpandedDays] = useState<Set<number>>(new Set([1]));
+  const [showCitySuggestions, setShowCitySuggestions] = useState(false);
+  const [selectedSuggestionIndex, setSelectedSuggestionIndex] = useState(-1);
+
+  // Filter cities based on input
+  const citySuggestions = currentInput.length > 0
+    ? POPULAR_CITIES.filter(city => 
+        city.toLowerCase().includes(currentInput.toLowerCase())
+      ).slice(0, 6)
+    : [];
+
+  const handleCityInputChange = (value: string) => {
+    setCurrentInput(value);
+    setShowCitySuggestions(value.length > 0);
+    setSelectedSuggestionIndex(-1);
+  };
+
+  const handleCitySelect = (city: string) => {
+    setCurrentInput(city);
+    setShowCitySuggestions(false);
+    setTripData({ ...tripData, city });
+    setCurrentInput("");
+    setStep("dates");
+  };
+
+  const handleCityKeyDown = (e: React.KeyboardEvent) => {
+    if (!showCitySuggestions || citySuggestions.length === 0) return;
+    
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setSelectedSuggestionIndex(prev => 
+        prev < citySuggestions.length - 1 ? prev + 1 : prev
+      );
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setSelectedSuggestionIndex(prev => prev > 0 ? prev - 1 : -1);
+    } else if (e.key === "Enter" && selectedSuggestionIndex >= 0) {
+      e.preventDefault();
+      handleCitySelect(citySuggestions[selectedSuggestionIndex]);
+    } else if (e.key === "Escape") {
+      setShowCitySuggestions(false);
+    }
+  };
 
   const toggleDay = (dayNum: number) => {
     setExpandedDays(prev => {
@@ -489,22 +655,53 @@ export default function Home() {
             </div>
 
             <form onSubmit={handleCitySubmit} className="relative">
-              <MapPin className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={20} />
+              <MapPin className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 z-10" size={20} />
               <input
                 type="text"
                 value={currentInput}
-                onChange={(e) => setCurrentInput(e.target.value)}
+                onChange={(e) => handleCityInputChange(e.target.value)}
+                onKeyDown={handleCityKeyDown}
+                onFocus={() => currentInput.length > 0 && setShowCitySuggestions(true)}
+                onBlur={() => setTimeout(() => setShowCitySuggestions(false), 150)}
                 placeholder="Enter a city"
                 className="w-full pl-12 pr-14 py-4 text-lg border-2 border-black bg-white text-black placeholder:text-gray-400 focus:outline-none focus:ring-4 focus:ring-black/10 transition-all"
                 autoFocus
+                autoComplete="off"
               />
               <button
                 type="submit"
-                className="absolute right-4 top-1/2 -translate-y-1/2 p-2 hover:bg-black hover:text-white transition-colors"
+                className="absolute right-2 top-1/2 -translate-y-1/2 px-4 py-2 bg-black text-white font-bold hover:bg-gray-800 transition-colors z-10"
                 aria-label="Next"
               >
-                <ArrowRight size={24} />
+                go.
               </button>
+
+              {/* City suggestions dropdown */}
+              <AnimatePresence>
+                {showCitySuggestions && citySuggestions.length > 0 && (
+                  <motion.div
+                    initial={{ opacity: 0, y: -10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -10 }}
+                    transition={{ duration: 0.15 }}
+                    className="absolute top-full left-0 right-0 mt-1 bg-white border-2 border-black shadow-lg z-50 max-h-64 overflow-auto"
+                  >
+                    {citySuggestions.map((city, index) => (
+                      <button
+                        key={city}
+                        type="button"
+                        onClick={() => handleCitySelect(city)}
+                        className={`w-full px-4 py-3 text-left flex items-center gap-3 hover:bg-gray-100 transition-colors ${
+                          index === selectedSuggestionIndex ? "bg-gray-100" : ""
+                        }`}
+                      >
+                        <MapPin size={16} className="text-gray-400 flex-shrink-0" />
+                        <span className="truncate">{city}</span>
+                      </button>
+                    ))}
+                  </motion.div>
+                )}
+              </AnimatePresence>
             </form>
           </motion.div>
         )}
@@ -596,13 +793,23 @@ export default function Home() {
                 </p>
               )}
 
-              <button
-                type="submit"
-                disabled={!tripData.startDate || !tripData.endDate}
-                className="w-full py-4 text-lg font-medium border-2 border-black bg-black text-white hover:bg-white hover:text-black transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
-              >
-                Continue
-              </button>
+              <div className="flex gap-4">
+                <button
+                  type="button"
+                  onClick={() => setStep("city")}
+                  className="px-6 py-4 text-lg font-medium border-2 border-black bg-white text-black hover:bg-gray-100 transition-colors flex items-center gap-2"
+                >
+                  <ArrowLeft size={20} />
+                  Back
+                </button>
+                <button
+                  type="submit"
+                  disabled={!tripData.startDate || !tripData.endDate}
+                  className="flex-1 py-4 text-lg font-bold border-2 border-black bg-black text-white hover:bg-white hover:text-black transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                >
+                  go.
+                </button>
+              </div>
             </form>
           </motion.div>
         )}
@@ -646,6 +853,14 @@ export default function Home() {
               <div className="flex gap-4">
                 <button
                   type="button"
+                  onClick={() => setStep("dates")}
+                  className="px-6 py-4 text-lg font-medium border-2 border-black bg-white text-black hover:bg-gray-100 transition-colors flex items-center gap-2"
+                >
+                  <ArrowLeft size={20} />
+                  Back
+                </button>
+                <button
+                  type="button"
                   onClick={skipVibe}
                   className="flex-1 py-4 text-lg font-medium border-2 border-black bg-white text-black hover:bg-gray-100 transition-colors"
                 >
@@ -653,7 +868,7 @@ export default function Home() {
                 </button>
                 <button
                   type="submit"
-                  className="flex-1 py-4 text-lg font-medium border-2 border-black bg-black text-white hover:bg-white hover:text-black transition-colors"
+                  className="flex-1 py-4 text-lg font-bold border-2 border-black bg-black text-white hover:bg-white hover:text-black transition-colors"
                 >
                   go.
                 </button>

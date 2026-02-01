@@ -27,6 +27,8 @@ class CandidatePlace:
     formatted_address: Optional[str] = None
     photo_url: Optional[str] = None
     score: float = 0.0
+    # Score breakdown for explanations
+    score_breakdown: Optional[Dict[str, Any]] = None
     
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "CandidatePlace":
@@ -60,6 +62,7 @@ class CandidatePlace:
             "formatted_address": self.formatted_address,
             "photo_url": self.photo_url,
             "score": round(self.score, 2),
+            "score_breakdown": self.score_breakdown,
         }
 
 
@@ -332,9 +335,22 @@ class UtilityScorer:
             centroid_lat, centroid_lng
         )
         
+        # Calculate actual distance for breakdown
+        distance_km = 0.0
+        if place.lat is not None and place.lng is not None:
+            distance_km = self.haversine_distance(
+                place.lat, place.lng, centroid_lat, centroid_lng
+            )
+        
         # 3. Reality Factor (weather penalty)
         weather_mult = self.calculate_weather_multiplier(
             place.types, place.category, weather
+        )
+        
+        # Check if place is outdoor (for breakdown)
+        is_outdoor = any(
+            t.lower() in self.OUTDOOR_TYPES 
+            for t in place.types + [place.category]
         )
         
         # 4. Social Proof Boost
@@ -343,6 +359,18 @@ class UtilityScorer:
         # Final score calculation
         # Multiplicative factors apply to base, then add bonus
         final_score = (base_score * distance_mult * weather_mult) + social_bonus
+        
+        # Store breakdown for explanation
+        place.score_breakdown = {
+            "base_score": round(base_score, 1),
+            "distance_km": round(distance_km, 1),
+            "distance_multiplier": round(distance_mult, 2),
+            "weather_multiplier": round(weather_mult, 2),
+            "social_bonus": social_bonus,
+            "is_outdoor": is_outdoor,
+            "weather_condition": weather.get("main") if weather else None,
+            "temperature": weather.get("temp") if weather else None,
+        }
         
         return final_score
     

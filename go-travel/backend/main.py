@@ -147,6 +147,7 @@ async def generate_trip(request: TripRequest):
             solver_output=solver_output,
             original_places=scored_places,
             hotel_coords=hotel_coords,
+            weather=weather,
         )
         
         print(f"[go.] ✓ Itinerary complete!")
