@@ -14,6 +14,60 @@ GOOGLE_PLACES_API_KEY = os.getenv("GOOGLE_PLACES_API_KEY")
 PLACES_SEARCH_URL = "https://places.googleapis.com/v1/places:searchText"
 
 
+def parse_opening_hours(regular_hours: Optional[dict]) -> Optional[dict]:
+    """
+    Parse Google Places regularOpeningHours into a structured format.
+    
+    Returns dict with:
+    - weekday_text: List of strings like ["Monday: 9:00 AM – 5:00 PM", ...]
+    - periods: List of {open: {day, hour, minute}, close: {day, hour, minute}}
+    - by_day: Dict mapping day (0=Sunday) to {open_time, close_time} in minutes from midnight
+    """
+    if not regular_hours:
+        return None
+    
+    result = {
+        "weekday_text": regular_hours.get("weekdayDescriptions", []),
+        "periods": [],
+        "by_day": {}  # day -> {open: minutes, close: minutes}
+    }
+    
+    periods = regular_hours.get("periods", [])
+    for period in periods:
+        open_info = period.get("open", {})
+        close_info = period.get("close", {})
+        
+        open_day = open_info.get("day", 0)
+        open_hour = open_info.get("hour", 0)
+        open_minute = open_info.get("minute", 0)
+        
+        close_day = close_info.get("day", open_day)
+        close_hour = close_info.get("hour", 23)
+        close_minute = close_info.get("minute", 59)
+        
+        result["periods"].append({
+            "open": {"day": open_day, "hour": open_hour, "minute": open_minute},
+            "close": {"day": close_day, "hour": close_hour, "minute": close_minute}
+        })
+        
+        # Convert to minutes from midnight for easy constraint checking
+        open_minutes = open_hour * 60 + open_minute
+        close_minutes = close_hour * 60 + close_minute
+        
+        # Store by day (0=Sunday, 1=Monday, ..., 6=Saturday)
+        if open_day not in result["by_day"]:
+            result["by_day"][open_day] = {"open": open_minutes, "close": close_minutes}
+        else:
+            # Some places have multiple periods per day (e.g., lunch and dinner)
+            existing = result["by_day"][open_day]
+            result["by_day"][open_day] = {
+                "open": min(existing["open"], open_minutes),
+                "close": max(existing["close"], close_minutes)
+            }
+    
+    return result
+
+
 async def fetch_place_details(session: aiohttp.ClientSession, search_query: str) -> Optional[dict]:
     """
     Fetch a single place from Google Places API (New) Text Search.
@@ -22,7 +76,7 @@ async def fetch_place_details(session: aiohttp.ClientSession, search_query: str)
     headers = {
         "Content-Type": "application/json",
         "X-Goog-Api-Key": GOOGLE_PLACES_API_KEY,
-        "X-Goog-FieldMask": "places.id,places.displayName,places.formattedAddress,places.location,places.rating,places.userRatingCount,places.currentOpeningHours,places.priceLevel,places.types,places.photos"
+        "X-Goog-FieldMask": "places.id,places.displayName,places.formattedAddress,places.location,places.rating,places.userRatingCount,places.currentOpeningHours,places.regularOpeningHours,places.priceLevel,places.types,places.photos"
     }
     
     payload = {
@@ -48,7 +102,8 @@ async def fetch_place_details(session: aiohttp.ClientSession, search_query: str)
                 "lng": place.get("location", {}).get("longitude"),
                 "rating": place.get("rating"),
                 "user_ratings_total": place.get("userRatingCount"),
-                "opening_hours": place.get("currentOpeningHours", {}).get("openNow"),
+                "open_now": place.get("currentOpeningHours", {}).get("openNow"),
+                "opening_hours": parse_opening_hours(place.get("regularOpeningHours")),
                 "price_level": place.get("priceLevel"),
                 "types": place.get("types", []),
                 "photo_reference": None

@@ -98,9 +98,10 @@ class ItinerarySolver:
     
     # Constants
     EARTH_RADIUS_KM: float = 6371.0
-    AVERAGE_SPEED_KMH: float = 30.0  # Average city travel speed
-    DAY_START_TIME: int = 540  # 9:00 AM in minutes
-    MAX_DAY_DURATION: int = 720  # 12 hours in minutes (9 AM - 9 PM)
+    AVERAGE_SPEED_KMH: float = 12.0  # Realistic transit speed (includes waiting, walking to/from stops)
+    DAY_START_TIME: int = 540  # 9:00 AM in minutes from midnight
+    DAY_END_TIME: int = 1320  # 10:00 PM in minutes from midnight
+    MAX_DAY_DURATION: int = 780  # 13 hours in minutes (9 AM - 10 PM)
     DEFAULT_VISIT_DURATION: int = 60  # 1 hour default visit time
     
     # Visit durations by category (in minutes)
@@ -110,9 +111,41 @@ class ItinerarySolver:
         "restaurant": 75,
         "nature": 90,
         "nightlife": 120,
+        "club": 120,
+        "bar": 90,
         "shopping": 60,
         "cultural": 60,
         "cafe": 30,
+        "breakfast": 45,
+        "brunch": 60,
+        "lunch": 60,
+        "dinner": 90,
+    }
+    
+    # Category-based preferred time windows (in minutes from midnight)
+    # Format: (earliest_start, latest_start) - when the visit should BEGIN
+    CATEGORY_TIME_WINDOWS: Dict[str, Tuple[int, int]] = {
+        # Morning activities (9 AM - 12 PM start)
+        "breakfast": (540, 660),      # 9:00 AM - 11:00 AM
+        "brunch": (600, 780),          # 10:00 AM - 1:00 PM
+        "cafe": (480, 1080),           # 8:00 AM - 6:00 PM (flexible)
+        
+        # Daytime activities (9 AM - 5 PM start)
+        "museum": (540, 900),          # 9:00 AM - 3:00 PM (need time to visit)
+        "landmark": (540, 1020),       # 9:00 AM - 5:00 PM
+        "cultural": (540, 1020),       # 9:00 AM - 5:00 PM
+        "nature": (540, 1020),         # 9:00 AM - 5:00 PM
+        "shopping": (600, 1080),       # 10:00 AM - 6:00 PM
+        
+        # Meals
+        "lunch": (720, 840),           # 12:00 PM - 2:00 PM
+        "restaurant": (720, 1200),     # 12:00 PM - 8:00 PM (flexible for lunch/dinner)
+        "dinner": (1080, 1260),        # 6:00 PM - 9:00 PM
+        
+        # Evening/Night activities (6 PM - 11 PM start)
+        "nightlife": (1080, 1380),     # 6:00 PM - 11:00 PM
+        "club": (1260, 1440),          # 9:00 PM - midnight
+        "bar": (1080, 1380),           # 6:00 PM - 11:00 PM
     }
     
     def __init__(self):
@@ -162,14 +195,71 @@ class ItinerarySolver:
         travel_hours = distance_km / self.AVERAGE_SPEED_KMH
         travel_minutes = int(travel_hours * 60)
         
-        # Add buffer for parking, walking, etc.
-        buffer = 5
+        # Add buffer for orientation, finding entrances, etc.
+        buffer = 10
         
         return travel_minutes + buffer
     
     def get_visit_duration(self, category: str) -> int:
         """Get estimated visit duration for a place category."""
         return self.VISIT_DURATIONS.get(category.lower(), self.DEFAULT_VISIT_DURATION)
+    
+    def get_time_window(
+        self, 
+        place: Dict[str, Any], 
+        day_of_week: int = 1  # Default Monday (1=Monday in Google's format)
+    ) -> Tuple[int, int]:
+        """
+        Calculate the time window for a place based on category and opening hours.
+        
+        Returns (earliest_start, latest_start) in minutes from midnight.
+        The solver will use these as constraints for when the visit can BEGIN.
+        
+        Priority:
+        1. Actual opening hours from Google Places (if available)
+        2. Category-based preferred times
+        3. Default day window (9 AM - 9 PM)
+        """
+        category = place.get("category", "").lower()
+        opening_hours = place.get("opening_hours")
+        visit_duration = self.get_visit_duration(category)
+        
+        # Start with category-based defaults
+        if category in self.CATEGORY_TIME_WINDOWS:
+            earliest, latest = self.CATEGORY_TIME_WINDOWS[category]
+        else:
+            # Default: can visit anytime during the day
+            earliest = self.DAY_START_TIME  # 9 AM
+            latest = self.DAY_END_TIME - visit_duration  # Need time to complete visit
+        
+        # Refine with actual opening hours if available
+        if opening_hours and opening_hours.get("by_day"):
+            by_day = opening_hours["by_day"]
+            
+            # Convert day_of_week: our input uses 0=Sunday, which matches Google
+            if day_of_week in by_day:
+                hours = by_day[day_of_week]
+                place_opens = hours["open"]
+                place_closes = hours["close"]
+                
+                # Constrain our window to actual opening hours
+                # Can't start before it opens
+                earliest = max(earliest, place_opens)
+                # Must finish before it closes, so start no later than close - duration
+                latest = min(latest, place_closes - visit_duration)
+                
+                # Ensure valid window
+                if earliest > latest:
+                    # Place doesn't fit in our preferred window - use opening hours directly
+                    earliest = place_opens
+                    latest = max(place_opens, place_closes - visit_duration)
+        
+        # Clamp to day boundaries
+        earliest = max(earliest, self.DAY_START_TIME)
+        latest = min(latest, self.DAY_END_TIME - visit_duration)
+        latest = max(latest, earliest)  # Ensure latest >= earliest
+        
+        return (earliest, latest)
     
     def create_data_model(
         self,
@@ -236,17 +326,29 @@ class ItinerarySolver:
             # Penalty proportional to score - dropping high-score places is expensive
             penalties.append(int(score * 10))
         
+        # Build time windows for each location
+        # time_windows[i] = (earliest_start, latest_start) in minutes from DAY_START
+        # Depot can be visited anytime (start/end of day)
+        time_windows = [(0, self.MAX_DAY_DURATION)]  # Depot
+        for place in places:
+            earliest, latest = self.get_time_window(place)
+            # Convert from minutes-from-midnight to minutes-from-day-start
+            earliest_relative = max(0, earliest - self.DAY_START_TIME)
+            latest_relative = min(self.MAX_DAY_DURATION, latest - self.DAY_START_TIME)
+            time_windows.append((earliest_relative, latest_relative))
+        
         data = {
             "time_matrix": time_matrix,
             "service_times": service_times,
             "prizes": prizes,
             "penalties": penalties,
+            "time_windows": time_windows,  # NEW: time window constraints
             "num_vehicles": num_days,  # DAYS AS VEHICLES
             "depot": 0,  # Hotel is the depot
             "num_locations": num_locations,
             "locations": locations,
             "places": places,  # Keep original place data
-            "max_time_per_vehicle": self.MAX_DAY_DURATION,  # 12 hours
+            "max_time_per_vehicle": self.MAX_DAY_DURATION,
         }
         
         return data
@@ -303,7 +405,8 @@ class ItinerarySolver:
         routing = pywrapcp.RoutingModel(manager)
         
         # ----- TIME DIMENSION -----
-        # Callback for time (travel time + service time)
+        # Callback for time: travel time + service time at destination
+        # This way CumulVar represents "completion time" at each node
         def time_callback(from_index, to_index):
             """Returns travel time + service time at destination."""
             from_node = manager.IndexToNode(from_index)
@@ -321,12 +424,19 @@ class ItinerarySolver:
         # This constrains each vehicle (day) to MAX_DAY_DURATION
         routing.AddDimension(
             transit_callback_index,
-            30,  # Allow 30 min slack (waiting time)
-            data["max_time_per_vehicle"],  # Max time per vehicle (12 hours)
+            120,  # Allow 2 hour slack (waiting time for time windows)
+            data["max_time_per_vehicle"],  # Max time per vehicle
             True,  # Start cumul at zero (each day starts fresh)
             "Time"
         )
         time_dimension = routing.GetDimensionOrDie("Time")
+        
+        # ----- TIME WINDOW CONSTRAINTS -----
+        # Apply time windows to each node (except depot which is flexible)
+        for node in range(1, data["num_locations"]):  # Skip depot (node 0)
+            index = manager.NodeToIndex(node)
+            earliest, latest = data["time_windows"][node]
+            time_dimension.CumulVar(index).SetRange(earliest, latest)
         
         # Minimize total time across all days
         for vehicle_id in range(data["num_vehicles"]):
@@ -386,7 +496,7 @@ class ItinerarySolver:
             while not routing.IsEnd(index):
                 node = manager.IndexToNode(index)
                 time_var = time_dimension.CumulVar(index)
-                arrival_time = solution.Value(time_var)
+                cumul_time = solution.Value(time_var)
                 
                 # Skip depot (node 0)
                 if node != 0:
@@ -394,7 +504,13 @@ class ItinerarySolver:
                     place = data["places"][node - 1]
                     
                     duration = data["service_times"][node]
-                    departure_time = arrival_time + duration
+                    
+                    # CumulVar includes service time, so we need to subtract it
+                    # to get the actual arrival time
+                    # cumul_time = time when we FINISH at this location
+                    # arrival_time = cumul_time - duration (when we ARRIVE)
+                    arrival_time = cumul_time - duration
+                    departure_time = cumul_time
                     
                     item = ItineraryItem(
                         place_id=place.get("place_id", f"place_{node}"),
@@ -455,7 +571,7 @@ def solve_itinerary(
 if __name__ == "__main__":
     import json
     
-    # Sample places (simulating scored places)
+    # Sample places with various categories including nightlife
     test_places = [
         {"name": "Vancouver Aquarium", "lat": 49.3005, "lng": -123.1309, "score": 85.0, "category": "landmark", "why": "Marine life", "place_id": "1"},
         {"name": "Stanley Park", "lat": 49.3017, "lng": -123.1417, "score": 92.0, "category": "nature", "why": "Urban park", "place_id": "2"},
@@ -463,38 +579,36 @@ if __name__ == "__main__":
         {"name": "Gastown", "lat": 49.2838, "lng": -123.1088, "score": 70.0, "category": "cultural", "why": "Historic", "place_id": "4"},
         {"name": "Science World", "lat": 49.2734, "lng": -123.1038, "score": 75.0, "category": "museum", "why": "Science museum", "place_id": "5"},
         {"name": "Capilano Bridge", "lat": 49.3429, "lng": -123.1149, "score": 88.0, "category": "nature", "why": "Suspension bridge", "place_id": "6"},
-        {"name": "English Bay", "lat": 49.2867, "lng": -123.1422, "score": 65.0, "category": "nature", "why": "Beach", "place_id": "7"},
-        {"name": "Queen Elizabeth Park", "lat": 49.2418, "lng": -123.1122, "score": 72.0, "category": "nature", "why": "Gardens", "place_id": "8"},
-        {"name": "VanDusen Garden", "lat": 49.2388, "lng": -123.1304, "score": 68.0, "category": "nature", "why": "Botanical garden", "place_id": "9"},
-        {"name": "Museum of Anthropology", "lat": 49.2695, "lng": -123.2590, "score": 80.0, "category": "museum", "why": "Cultural artifacts", "place_id": "10"},
+        # Nightlife - should be scheduled in evening
+        {"name": "Celebrities Nightclub", "lat": 49.2820, "lng": -123.1171, "score": 72.0, "category": "club", "why": "Popular nightclub", "place_id": "7"},
+        {"name": "The Keefer Bar", "lat": 49.2803, "lng": -123.1045, "score": 68.0, "category": "bar", "why": "Craft cocktails", "place_id": "8"},
+        # Meals
+        {"name": "Medina Cafe", "lat": 49.2808, "lng": -123.1139, "score": 80.0, "category": "breakfast", "why": "Best brunch spot", "place_id": "9"},
+        {"name": "Miku Restaurant", "lat": 49.2876, "lng": -123.1134, "score": 85.0, "category": "dinner", "why": "Fine dining sushi", "place_id": "10"},
+        # Museum with opening hours
+        {"name": "Museum of Anthropology", "lat": 49.2695, "lng": -123.2590, "score": 80.0, "category": "museum", "why": "Cultural artifacts", "place_id": "11",
+         "opening_hours": {"by_day": {1: {"open": 600, "close": 1020}}}},  # 10 AM - 5 PM Monday
     ]
     
     # Hotel at downtown Vancouver
     hotel = (49.2827, -123.1207)
     
     print("="*60)
-    print("MULTI-DAY ITINERARY SOLVER TEST")
+    print("TIME-AWARE ITINERARY SOLVER TEST")
     print("="*60)
     print(f"Places: {len(test_places)}")
     print(f"Hotel: {hotel}")
+    print("\nExpected behavior:")
+    print("- Museums: 9 AM - 3 PM start")
+    print("- Breakfast: 9 AM - 11 AM")
+    print("- Dinner: 6 PM - 9 PM")
+    print("- Clubs: 9 PM - midnight")
+    print("- Bars: 6 PM - 11 PM")
     
-    # Test 1: Single day
-    print("\n--- TEST 1: 1 Day ---")
-    result = solve_itinerary(test_places, hotel, num_days=1)
-    print(json.dumps(result, indent=2))
-    
-    # Test 2: 2 days
-    print("\n--- TEST 2: 2 Days ---")
+    # Test: 2 days - should have morning/day activities then evening ones
+    print("\n--- TEST: 2 Days with Time Constraints ---")
     result = solve_itinerary(test_places, hotel, num_days=2)
     for day in result:
         print(f"\nDay {day['day']}: {day['num_places']} places, Score: {day['total_score']}")
         for item in day['items']:
-            print(f"  {item['arrival_time_formatted']} - {item['name']} ({item['category']})")
-    
-    # Test 3: 3 days
-    print("\n--- TEST 3: 3 Days ---")
-    result = solve_itinerary(test_places, hotel, num_days=3)
-    for day in result:
-        print(f"\nDay {day['day']}: {day['num_places']} places, Score: {day['total_score']}")
-        for item in day['items']:
-            print(f"  {item['arrival_time_formatted']} - {item['name']} ({item['category']})")
+            print(f"  {item['arrival_time_formatted']} - {item['departure_time_formatted']} | {item['name']} ({item['category']})")

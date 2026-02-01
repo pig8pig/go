@@ -16,6 +16,9 @@ import {
   MapPinned
 } from "lucide-react";
 import { useState } from "react";
+import { DayPicker, DateRange } from "react-day-picker";
+import { format, addDays } from "date-fns";
+import "react-day-picker/dist/style.css";
 
 type Step = "city" | "dates" | "vibe" | "results";
 
@@ -341,6 +344,7 @@ export default function Home() {
     endDate: "",
     vibe: "",
   });
+  const [dateRange, setDateRange] = useState<DateRange | undefined>(undefined);
   const [itinerary, setItinerary] = useState<ItineraryResponse | null>(null);
   const [currentInput, setCurrentInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -371,6 +375,17 @@ export default function Home() {
     setTripData({ ...tripData, city: currentInput });
     setCurrentInput("");
     setStep("dates");
+  };
+
+  const handleDateSelect = (range: DateRange | undefined) => {
+    setDateRange(range);
+    if (range?.from) {
+      setTripData(prev => ({
+        ...prev,
+        startDate: format(range.from!, "yyyy-MM-dd"),
+        endDate: range.to ? format(range.to, "yyyy-MM-dd") : "",
+      }));
+    }
   };
 
   const handleDatesSubmit = (e: React.FormEvent) => {
@@ -437,6 +452,7 @@ export default function Home() {
   const resetFlow = () => {
     setStep("city");
     setTripData({ city: "", startDate: "", endDate: "", vibe: "" });
+    setDateRange(undefined);
     setItinerary(null);
     setCurrentInput("");
     setError(null);
@@ -502,7 +518,7 @@ export default function Home() {
             animate="animate"
             exit="exit"
             transition={{ duration: 0.4 }}
-            className="w-full max-w-2xl space-y-12"
+            className="w-full max-w-2xl space-y-8"
           >
             <div className="space-y-4">
               <h1 className="text-8xl font-bold text-center tracking-tight">
@@ -512,38 +528,73 @@ export default function Home() {
                 {tripData.city}
               </p>
               <p className="text-center text-gray-500 text-lg">
-                When are you traveling?
+                Select your travel dates
               </p>
             </div>
 
-            <form onSubmit={handleDatesSubmit} className="space-y-4">
-              <div className="relative">
-                <Calendar className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={20} />
-                <input
-                  type="date"
-                  value={tripData.startDate}
-                  onChange={(e) => setTripData({ ...tripData, startDate: e.target.value })}
-                  className="w-full pl-12 pr-6 py-4 text-lg border-2 border-black bg-white text-black focus:outline-none focus:ring-4 focus:ring-black/10 transition-all"
-                  autoFocus
-                />
-                <span className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-400 text-sm">
-                  Start
-                </span>
+            <form onSubmit={handleDatesSubmit} className="space-y-6">
+              {/* Calendar Picker */}
+              <div className="flex justify-center">
+                <div className="border-2 border-black p-4 bg-white">
+                  <DayPicker
+                    mode="range"
+                    selected={dateRange}
+                    onSelect={handleDateSelect}
+                    numberOfMonths={2}
+                    disabled={{ before: new Date() }}
+                    modifiersStyles={{
+                      selected: {
+                        backgroundColor: "black",
+                        color: "white",
+                      },
+                      range_middle: {
+                        backgroundColor: "#e5e5e5",
+                        color: "black",
+                      },
+                    }}
+                    styles={{
+                      caption: { color: "black" },
+                      head_cell: { color: "#666", fontWeight: 500 },
+                      day: { 
+                        margin: "2px",
+                        borderRadius: "0",
+                      },
+                    }}
+                    classNames={{
+                      day_selected: "bg-black text-white",
+                      day_range_middle: "bg-gray-200",
+                    }}
+                  />
+                </div>
               </div>
 
-              <div className="relative">
-                <Calendar className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={20} />
-                <input
-                  type="date"
-                  value={tripData.endDate}
-                  onChange={(e) => setTripData({ ...tripData, endDate: e.target.value })}
-                  min={tripData.startDate}
-                  className="w-full pl-12 pr-6 py-4 text-lg border-2 border-black bg-white text-black focus:outline-none focus:ring-4 focus:ring-black/10 transition-all"
-                />
-                <span className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-400 text-sm">
-                  End
-                </span>
+              {/* Selected Dates Display */}
+              <div className="flex justify-center gap-8 text-center">
+                <div className="space-y-1">
+                  <p className="text-sm text-gray-500">Start Date</p>
+                  <p className="text-lg font-medium">
+                    {dateRange?.from 
+                      ? format(dateRange.from, "MMM d, yyyy")
+                      : "Select start"}
+                  </p>
+                </div>
+                <div className="w-px bg-gray-300" />
+                <div className="space-y-1">
+                  <p className="text-sm text-gray-500">End Date</p>
+                  <p className="text-lg font-medium">
+                    {dateRange?.to 
+                      ? format(dateRange.to, "MMM d, yyyy")
+                      : "Select end"}
+                  </p>
+                </div>
               </div>
+
+              {/* Trip Duration */}
+              {dateRange?.from && dateRange?.to && (
+                <p className="text-center text-gray-500">
+                  {Math.ceil((dateRange.to.getTime() - dateRange.from.getTime()) / (1000 * 60 * 60 * 24)) + 1} days
+                </p>
+              )}
 
               <button
                 type="submit"
@@ -665,31 +716,6 @@ export default function Home() {
               <>
                 {/* Header */}
                 <TripHeader trip={itinerary.trip} />
-
-                {/* Action buttons */}
-                <div className="flex gap-3">
-                  <button
-                    onClick={expandAllDays}
-                    className="flex items-center gap-2 px-4 py-2 text-sm border-2 border-gray-300 hover:border-black transition-colors"
-                  >
-                    <ChevronDown size={16} />
-                    Expand all
-                  </button>
-                  {itinerary.hotel && (
-                    <button
-                      onClick={() => {
-                        window.open(
-                          `https://www.google.com/maps/search/?api=1&query=${itinerary.hotel!.lat},${itinerary.hotel!.lng}`,
-                          "_blank"
-                        );
-                      }}
-                      className="flex items-center gap-2 px-4 py-2 text-sm border-2 border-gray-300 hover:border-black transition-colors"
-                    >
-                      <MapPinned size={16} />
-                      View hotel area
-                    </button>
-                  )}
-                </div>
 
                 {/* Days */}
                 <div className="space-y-4">
