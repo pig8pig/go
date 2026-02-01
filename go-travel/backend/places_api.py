@@ -133,7 +133,17 @@ def get_photo_url(photo_reference: str, max_width: int = 400) -> str:
 # Sync wrapper for use in non-async contexts
 def enrich_candidates_sync(candidates: list[dict]) -> list[dict]:
     """Synchronous wrapper for enrich_candidates."""
-    return asyncio.run(enrich_candidates(candidates))
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        # No running loop, safe to use asyncio.run()
+        return asyncio.run(enrich_candidates(candidates))
+    
+    # Already in an event loop - use nest_asyncio or run in executor
+    import concurrent.futures
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        future = executor.submit(asyncio.run, enrich_candidates(candidates))
+        return future.result()
 
 
 # For testing
