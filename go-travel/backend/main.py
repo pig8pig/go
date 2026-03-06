@@ -169,7 +169,12 @@ async def health_check():
     return {
         "status": "healthy",
         "service": "go. backend",
-        "version": "0.2.0"
+        "version": "0.2.0",
+        "keys": {
+            "ANTHROPIC_API_KEY": bool(os.getenv("ANTHROPIC_API_KEY")),
+            "GOOGLE_PLACES_API_KEY": bool(os.getenv("GOOGLE_PLACES_API_KEY")),
+            "OPENWEATHER_API_KEY": bool(os.getenv("OPENWEATHER_API_KEY")),
+        }
     }
 
 if __name__ == "__main__":
